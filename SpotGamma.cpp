@@ -1,7 +1,9 @@
-#include <iostream>
-#include <string>
+// The stdlib includes are included for us in the SierraChart "remote build"
+// #include <iostream>
+// #include <string>
+#include "sierrachart.h"
 
-SCDLLName("Spot Gamma")
+SCDLLName("SpotGamma")
 
 const SCString FAKE_URL = "https://spotgamma-system-files.s3.amazonaws.com/ENTER_VALID_URL.csv";
 
@@ -188,14 +190,14 @@ SCSFExport scsf_SpotGamma(SCStudyInterfaceRef sc)
   sc.AddMessageToLog("Adding levels", 0);
 
   SCString fileContents = sc.HTTPResponse;
-  vector<char *> fileContentsVector;
+  std::vector<char *> fileContentsVector;
   fileContents.Tokenize("\n", fileContentsVector);
 
   // Iterate through each line and draw it
   int lineNumber = 0;
   const int colorOverride = ColorOverride.GetColor();
   for (char *lineChars : fileContentsVector) {
-    vector<char *> vector;
+    std::vector<char *> columns;
     SCString scstringLine = lineChars;
 
     // Prevents parsing additional lines
@@ -205,15 +207,15 @@ SCSFExport scsf_SpotGamma(SCStudyInterfaceRef sc)
     }
 
     // Tokenize
-    scstringLine.Tokenize(",", vector);
+    scstringLine.Tokenize(",", columns);
 
     int index = 0;
     float priceLevel = 0; // Column A
     char *label;          // Column B
     SCString colorString; // Column C
-    for (char *cellChars : vector) {
+    for (char *cellChars : columns) {
       if (index == 0) {
-        priceLevel = stof(cellChars);
+        priceLevel = std::stof(cellChars);
       } else if (index == 1) {
         label = cellChars;
       } else if (index == 2) {
@@ -229,7 +231,7 @@ SCSFExport scsf_SpotGamma(SCStudyInterfaceRef sc)
     }
 
     int r, g, b;
-    sscanf(colorString.GetChars(), "%02x%02x%02x", &r, &g, &b);
+    sscanf_s(colorString.GetChars(), "%02x%02x%02x", &r, &g, &b);
     const int color = colorOverride != RGB(0, 0, 0) ? colorOverride : RGB(r, g, b);
 
     if (!(priceLevel > 0)) {
