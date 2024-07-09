@@ -1,249 +1,284 @@
-// The stdlib includes are included for us in the SierraChart "remote build"
-// #include <iostream>
-// #include <string>
 #include "sierrachart.h"
+#include <string>
+#include <sstream>
+#include <vector>
+SCDLLName("SpotGamma Levels Importer")
 
-SCDLLName("SpotGamma")
+/*
 
-const SCString FAKE_URL = "https://spotgamma-system-files.s3.amazonaws.com/ENTER_VALID_URL.csv";
+    The format of the CSV is as follows:
+        (float)  Price
+        (string) Note
+        (string) Color
+        
+*/
 
-/**************
- * Constants  *
- **************/
+// Struct we'll use to reference our vector
+struct PriceLabel {
+    float Price;
+    SCString Label;
+    COLORREF LabelColor;
+};
 
-enum {REQUEST_NOT_SENT = 0,  REQUEST_SENT};
-
-/*********************
- * Helper Functions  *
- *********************/
-
-void cleanDrawings(int lineCountStart, SCStudyInterfaceRef sc) {
-  // clear all drawings
-  int _lineNumber = lineCountStart;
-  while (true) {
-    if (!sc.ChartDrawingExists(sc.ChartNumber, _lineNumber)) {
-      break;
-    }
-
-    sc.DeleteACSChartDrawing(sc.ChartNumber, TOOL_DELETE_CHARTDRAWING, _lineNumber);
-    _lineNumber++;
-  }
-}
-
-void drawPriceLevel(
-    SCDateTime beginTime,
-    float price,
-    int lineNumber,
-    int color,
-    int width,
-    SCString label,
-    int fontSize,
-    SCStudyInterfaceRef sc,
-    SubgraphLineStyles lineStyle = LINESTYLE_SOLID)
+SCSFExport scsf_SpotGammaLevels(SCStudyInterfaceRef sc)
 {
+    const SCString FAKE_URL = "https://api.spotgamma.com/integration/FAKE_URL/SPX_sierra.csv";
+    
+    // logging object
+    SCString msg;
 
-  SCDateTime endTime = sc.GetTradingDayStartDateTimeOfBar(beginTime) + SCDateTime::DAYS(3);
+    // General Input Settings
+    SCInputRef UrlPath = sc.Input[0];
+    SCInputRef DrawLinesOnChart = sc.Input[2];
+    SCInputRef ShowPriceOnChart = sc.Input[3];
+    // Update Interval Input (in minutes)
+    SCInputRef UpdateInterval = sc.Input[4];
+    
+    // Set configuration variables
+    if (sc.SetDefaults)
+    {
+        sc.GraphName = "SpotGamma Levels";
+        sc.GraphRegion = 0;
 
-  s_UseTool Tool;
+        UrlPath.Name = "CSV URL";
+        // example template:
+        // https://docs.google.com/spreadsheets/d/1fx_Ym6QodEJIqQO90HR1dWYFw5RoK2w5ywtHeMlMeZY/gviz/tq?tqx=out:csv
+        // Google Docs Spreadsheet
+        // REQUIRED:
+        //    - set SHARING to "Anyone with link"
+        //    - strip off anything after the unique key, (eg "/edit#usp=sharing")
+        UrlPath.SetString(FAKE_URL);
 
-  // SCInputRef TextPosition = sc.Input[2];
+        // Chart specific settings
+        DrawLinesOnChart.Name = "Draw Lines?";
+        DrawLinesOnChart.SetYesNo(1);
 
-  const bool isUserDrawing = false;
+        ShowPriceOnChart.Name = "Show Price Label?";
+        ShowPriceOnChart.SetYesNo(0);
 
-  Tool.Clear();
-  Tool.ChartNumber = sc.ChartNumber;
-  Tool.Region = sc.GraphRegion;
-  Tool.DrawingType = DRAWING_LINE;
-  Tool.BeginDateTime = beginTime;
-  Tool.EndDateTime = endTime;
-  Tool.BeginValue = price;
-  Tool.EndValue = price;
-  Tool.LineNumber = lineNumber;
-  Tool.LineStyle = lineStyle;
-  Tool.LineWidth = width;
-  Tool.Color = color;
-  Tool.AddAsUserDrawnDrawing = isUserDrawing;
-  Tool.TextAlignment = DT_BOTTOM;
-  Tool.FontSize = fontSize;
-  Tool.Text = label;
-  Tool.ShowPrice = 0;
-  Tool.AddMethod = UTAM_ADD_OR_ADJUST;
-  Tool.AllowSaveToChartbook = 0;
+        UpdateInterval.Name = "Update Interval (in Min, 0 = manual update with INS key)";
+        UpdateInterval.SetInt(0);
 
-  sc.UseTool(Tool);
-}
-
-/***********************
- *  Exported Function  *
- ***********************/
-
-SCSFExport scsf_SpotGamma(SCStudyInterfaceRef sc)
-{
-  SCInputRef UrlPath = sc.Input[0];
-  SCInputRef UpdateInterval = sc.Input[1];
-  SCInputRef ColorOverride = sc.Input[3];
-  SCInputRef FontSize = sc.Input[4];
-  SCInputRef LineWidth = sc.Input[5];
-
-  if (sc.SetDefaults)
-  {
-    sc.GraphName = "SpotGamma";
-    sc.GraphRegion = 0;
-    sc.AutoLoop = 1;
-
-    UrlPath.Name = "URL Path to CSV";
-    UrlPath.SetString(FAKE_URL);
-
-    UpdateInterval.Name = "Update Interval In Minutes";
-    UpdateInterval.SetInt(5);
-
-    ColorOverride.Name = "Color Override";
-    ColorOverride.SetColor(RGB(0, 0, 0));
-
-    FontSize.Name = "Font Size";
-    FontSize.SetInt(14);
-
-    LineWidth.Name = "Line Width";
-    LineWidth.SetInt(1);
-
-    return;
-  }
-
-  const int lineCountStart = 2020;
-  SCDateTime &lastUpdate = sc.GetPersistentSCDateTime(0);
-  int &downloadingStatus = sc.GetPersistentInt(1);
-  int &callsSinceRequestSent = sc.GetPersistentInt(2);
-
-  // Reset
-  if (sc.Index == 0) {
-    lastUpdate = 0;
-    downloadingStatus = 0;
-    callsSinceRequestSent = 0;
-  }
-
-  if (sc.IsFullRecalculation || sc.HideStudy) {
-    return;
-  }
-
-  // Reset downloading status if request has taken too long
-  // This is more or less an arbritriary number
-  if (callsSinceRequestSent > 500) {
-    downloadingStatus = REQUEST_NOT_SENT;
-    sc.AddMessageToLog("Request marked as failed", 0);
-  }
-
-  if (downloadingStatus == REQUEST_SENT) {
-    callsSinceRequestSent++;
-
-    //The request has not completed, therefore there is nothing to do so we will return
-    if (sc.HTTPResponse == "") {
-      return;
+        return;
     }
-  }
 
-  // Only run at time interval
-  SCDateTime Now = sc.CurrentSystemDateTime;
-  SCDateTime lastUpdateCopy = lastUpdate;
-  if (lastUpdate != 0 && Now < lastUpdateCopy.AddMinutes(UpdateInterval.GetInt()) && downloadingStatus != REQUEST_SENT) {
-    return;
-  }
-  lastUpdate = Now;
+    // Process to initialize variables and pointers along with StateMessage for debug
+    int UpdateIntervalInMin = UpdateInterval.GetInt();
+    int UpdateIntervalInSec = UpdateIntervalInMin * 60;
+    int &LastUpdated = sc.GetPersistentInt(9);
+    int& RequestState = sc.GetPersistentInt(1);
+	enum {REQUEST_NOT_SENT = 0,  REQUEST_SENT, REQUEST_RECEIVED};
+	SCString StateMessage; // Used for debugging purposes.  Should add "if enabled" logic toggle in the future.
 
-  const SCString urlPath = UrlPath.GetString();
-  if (urlPath == FAKE_URL) {
-    sc.AddMessageToLog("Please setup the study.", 0);
-    return;
-  }
-
-  // Download CSV only if we haven't already sent out the request
-  if (downloadingStatus == REQUEST_NOT_SENT) {
-    if (!sc.MakeHTTPRequest(urlPath)) {
-      sc.AddMessageToLog("Error making HTTP request.", 0);
-      downloadingStatus = REQUEST_NOT_SENT;
-      return;
-    } else {
-      downloadingStatus = REQUEST_SENT;
-      callsSinceRequestSent = 0;
-      return;
+    // Only run at time interval
+    // Convert TimeInSec to Seconds and compare to last actual update
+    SCDateTime Now = sc.CurrentSystemDateTime;
+    int TimeInSec = Now.GetTimeInSeconds();
+    
+    if (LastUpdated > 0 && LastUpdated + UpdateIntervalInSec > TimeInSec && sc.Index != 0 && RequestState != REQUEST_SENT) {
+        // exit function if nothing to update
+        return;
     }
-  }
+    LastUpdated = TimeInSec;
 
-  // At this point the request should've been received now we must error check
-  if (downloadingStatus != REQUEST_SENT) {
-    sc.AddMessageToLog("Something went wrong", 0);
-    return;
-  } else if (sc.HTTPResponse == "ERROR") {
-    sc.AddMessageToLog("There was an error while making the request. Please verify the URL provided.", 0);
-    return;
-  }
 
-  // Reset state
-  downloadingStatus = REQUEST_NOT_SENT;
+    // hold our HTTP Response
+    // Reference to persistent SCString for storing or accessing HTTP response content
+    SCString &HttpResponseContent = sc.GetPersistentSCString(4);
 
-  sc.AddMessageToLog("Downloaded Data: ", 0);
-  sc.AddMessageToLog(sc.HTTPResponse, 0);
-
-  // Clear drawings after each run
-  cleanDrawings(lineCountStart, sc);
-
-  // Parse CSV
-  sc.AddMessageToLog("Adding levels", 0);
-
-  SCString fileContents = sc.HTTPResponse;
-  std::vector<char *> fileContentsVector;
-  fileContents.Tokenize("\n", fileContentsVector);
-
-  // Iterate through each line and draw it
-  int lineNumber = 0;
-  const int colorOverride = ColorOverride.GetColor();
-  for (char *lineChars : fileContentsVector) {
-    std::vector<char *> columns;
-    SCString scstringLine = lineChars;
-
-    // Prevents parsing additional lines
-    if (scstringLine.GetLength() < 10) {
-      sc.AddMessageToLog("Added levels", 0);
-      return;
+    SCString Url = UrlPath.GetString();
+    // add specific code to output as CSV attachment from Google Sheets
+    // Reference to how to get Google Sheets to output an editable CSV file: 
+    // https://www.megalytic.com/knowledge/using-google-sheets-to-host-editable-csv-files
+    // Syntax is such: /gvis/tq?tqx=out:csv
+    if (Url == FAKE_URL) {
+        sc.AddMessageToLog("Please input the proper Integration URL", 0);
+        return;
     }
+    Url.Format("%s/gviz/tq?tqx=out:csv", Url.GetChars());
+
+    // Cast the pointer retrieved from persistent storage to a pointer to a vector of PriceLabel objects
+    std::vector<PriceLabel>* p_PriceLabels = reinterpret_cast<std::vector<PriceLabel>*>(sc.GetPersistentPointer(0));
+    if (p_PriceLabels == NULL) {
+        p_PriceLabels = new std::vector<PriceLabel>;
+        sc.SetPersistentPointer(0, p_PriceLabels);
+    }
+    else {
+        // clear old levels
+        p_PriceLabels->clear();
+    }
+
+    
+    // HTTP Request Section with StateMessage for debug
+
+    // latest request status
+    
+
+	
+    if ((sc.Index == 0 || UpdateIntervalInMin > 0) && RequestState == REQUEST_NOT_SENT) {
+		// StateMessage.Format("sc.Index: %d, UpdateIntervalInMin: %d, RequestState: %d", sc.Index, UpdateIntervalInMin, RequestState);
+		// sc.AddMessageToLog(StateMessage, 0);
+        if (!sc.MakeHTTPRequest(Url)) {
+            sc.AddMessageToLog("Error making HTTP request.", 1);
+            RequestState = REQUEST_NOT_SENT;
+        } else {
+			sc.AddMessageToLog("HTTP Request SENT.", 1);
+			// StateMessage.Format("sc.Index: %d, UpdateIntervalInMin: %d, RequestState: %d", sc.Index, UpdateIntervalInMin, RequestState);
+			// sc.AddMessageToLog(StateMessage, 0);
+            RequestState = REQUEST_SENT;
+            // sc.AddMessageToLog(sc.HTTPResponse, 1); // HTTP response for debugging
+            HttpResponseContent = sc.HTTPResponse;
+        }
+    }
+
+
+    if (RequestState == REQUEST_SENT) {
+        // StateMessage.Format("sc.Index: %d, UpdateIntervalInMin: %d, RequestState: %d", sc.Index, UpdateIntervalInMin, RequestState);
+	    // sc.AddMessageToLog(StateMessage, 0);
+        if (sc.HTTPResponse != "") {
+            RequestState = REQUEST_RECEIVED;
+			sc.AddMessageToLog("HTTP Request RECEIVED, Updating Levels", 1);
+            // sc.AddMessageToLog(sc.HTTPResponse, 1); // HTTP response for debugging
+            HttpResponseContent = sc.HTTPResponse;
+        } else {
+        // Request not completed, nothing to do
+			// sc.AddMessageToLog("Hanging Request", 0);
+        return;
+        }
+    }
+
+    // reset state for next run
+    RequestState = REQUEST_NOT_SENT;
+	// StateMessage.Format("sc.Index: %d, UpdateIntervalInMin: %d, RequestState: %d", sc.Index, UpdateIntervalInMin, RequestState);
+	// sc.AddMessageToLog(StateMessage, 0);
+    // sc.AddMessageToLog("RequestState Reset: REQUEST_NOT_SENT", 0);
 
     // Tokenize
-    scstringLine.Tokenize(",", columns);
+    // Initialize vector to store tokens from CSV
+    std::vector<char*> tokens;
+    // Create input stream from CSV content retrieved from HTTP Response
+    std::istringstream input(HttpResponseContent.GetChars());
+    int LineNumber = 1;
 
-    int index = 0;
-    float priceLevel = 0; // Column A
-    char *label;          // Column B
-    SCString colorString; // Column C
-    for (char *cellChars : columns) {
-      if (index == 0) {
-        priceLevel = std::stof(cellChars);
-      } else if (index == 1) {
-        label = cellChars;
-      } else if (index == 2) {
-        SCString cellValue(cellChars);
-        if (cellValue.GetLength() == 7) {
-          colorString += cellValue.GetSubString(6, 1).GetChars();
-        } else {
-          colorString += "CCCCCC";
+    // We're going to:
+    // - loop line by line
+    // - convert each line to SCString for processing
+    // - remove " characters as first and last characters which cause an error
+    // - tokenize the line 
+    // - initialize the Tool and tool settings
+    // - then process each token extracted from the current line
+    for (std::string line; getline(input,line);) {
+        // msg.Format("%s", line.c_str());
+        // sc.AddMessageToLog(msg,1);
+
+        SCString scline = line.c_str();
+		// May be a Google Sheets specific issue, unsure
+        scline = scline.GetSubString(scline.GetLength() - 2, 1);
+        scline.Tokenize("\",\"", tokens);
+
+        s_UseTool Tool;
+        Tool.LineStyle = LINESTYLE_SOLID;
+        Tool.LineWidth = 1;
+        Tool.TextAlignment = DT_RIGHT;
+        int TokenIndex = 1;
+        float price;
+        SCString note;
+        SCString color;
+        int linewidth = 1;
+        int textalignment = 1;
+        for (char* i : tokens) {
+            //msg.Format("%s", i);
+            //sc.AddMessageToLog(msg,1);
+
+            // price
+            if (TokenIndex == 1) {
+                // Should technically be replaced with stof(i) for type checking
+                // we control the data so "assume" type is proper
+                price = atof(i);
+                Tool.DrawingType = DRAWING_HORIZONTALLINE;
+                Tool.BeginValue = price;
+                Tool.EndValue = price;
+            }
+
+            // note
+            else if (TokenIndex == 2) {
+                note = i;
+            }
+            // color
+            else if (TokenIndex == 3) {
+                color = i;
+				SCString cellValue(i);
+				
+                // Inefficient -- Should use {enum} and switch or colorMap hash
+                // leaving these for future improvements to add color override.  Out of scope for initial offering to repair functionality
+            
+                if (color == "red") Tool.Color = COLOR_RED;
+                else if (color == "green") Tool.Color = COLOR_GREEN;
+                else if (color == "blue") Tool.Color = COLOR_BLUE;
+                else if (color == "white") Tool.Color = COLOR_WHITE;
+                else if (color == "black") Tool.Color = COLOR_BLACK;
+                else if (color == "purple") Tool.Color = COLOR_PURPLE;
+                else if (color == "pink") Tool.Color = COLOR_PINK;
+                else if (color == "yellow") Tool.Color = COLOR_YELLOW;
+                else if (color == "gold") Tool.Color = COLOR_GOLD;
+                else if (color == "brown") Tool.Color = COLOR_BROWN;
+                else if (color == "cyan") Tool.Color = COLOR_CYAN;
+                else if (color == "gray") Tool.Color = COLOR_GRAY;
+                else if (cellValue.GetLength() == 7 && cellValue[0] == '#') {
+                    int r, g, b;
+                    sscanf_s(cellValue.GetChars() + 1, "%02x%02x%02x", &r, &g, &b);
+                    Tool.Color = RGB(r, g, b);
+                } else {
+                    Tool.Color = COLOR_WHITE;
+                }
+
+            }
+
+            // draw line
+            if (DrawLinesOnChart.GetInt() == 1) {
+                Tool.ChartNumber = sc.ChartNumber;
+                Tool.BeginDateTime = sc.BaseDateTimeIn[0];
+                Tool.EndDateTime = sc.BaseDateTimeIn[sc.ArraySize-1];
+                Tool.AddMethod = UTAM_ADD_OR_ADJUST;
+                Tool.ShowPrice = ShowPriceOnChart.GetInt();
+
+
+                // Erroneous \n chars in note cause unhandled exception
+                // Purpose: To find & replace the first occurrence of an escaped newline string literal ("\\n") in a given string with an actual newline character ('\n'). 
+                // It involves the following steps:
+                // 1. Retrieving the string to be processed.
+                // 2. Defining the escaped newline string literal for comparison.
+                // 3. Searching for the literal in the string.
+                // 4. If found, replacing the first backslash of the escaped newline with a newline character.
+                // 5. Removing the second character ('n') of the escaped newline, adjusting the string to contain the actual newline character.
+
+                std::string NoteStr;
+                NoteStr = note.GetChars();
+
+                std::string NewLine = "\\n";
+
+                std::size_t IndexOfNewLine;
+
+                char * p_substr = strstr(NoteStr.c_str(), NewLine.c_str());
+                if (p_substr != NULL) {
+                    IndexOfNewLine = NoteStr.find(NewLine);
+
+                    strncpy(p_substr, "\n", 1);
+
+                    NoteStr.erase(IndexOfNewLine + 1, 1);
+                }
+                Tool.Text.Format("%s", NoteStr.c_str());
+                Tool.LineNumber = LineNumber;
+                sc.UseTool(Tool);
+            }
+            
+            TokenIndex++;
         }
-      }
 
-      index++;
+        LineNumber++;
+
     }
 
-    int r, g, b;
-    sscanf_s(colorString.GetChars(), "%02x%02x%02x", &r, &g, &b);
-    const int color = colorOverride != RGB(0, 0, 0) ? colorOverride : RGB(r, g, b);
-
-    if (!(priceLevel > 0)) {
-      return;
-    }
-
-    SCDateTime startTime = sc.BaseDateTimeIn[sc.Index];
-    startTime.SetTimeHMS(0, 0, 0);
-    drawPriceLevel(startTime, priceLevel, lineCountStart + lineNumber, color, LineWidth.GetInt(), label, FontSize.GetInt(), sc);
-
-    lineNumber++;
-  }
-
-  sc.AddMessageToLog("Added levels", 0);
+    
 }
+
